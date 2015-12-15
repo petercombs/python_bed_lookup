@@ -8,10 +8,27 @@ import sys
 import os
 import sqlite3
 from subprocess import check_output as sub
+from collections import defaultdict
+
+# Lets use C++ libraries to save memory
+from libcpp.vector cimport vector
+from libcpp.string cimport string
 
 # Define max length to use dictionary
-_max_len = 500000  # 500,000 is a reasonable default
+_max_len = 1000000  # 500,000 is a reasonable default
 
+
+# C++ Structures to save memory
+cdef struct StartEnd:
+    long start, end
+    string name
+
+cdef class VecHolder:
+   cdef public vector[StartEnd] wrapped_vector
+   def __getitem__(self, key):
+       return self.wrapped_vector[key]
+   def push_back(self,obj):
+     self.wrapped_vector.push_back(obj)
 
 class BedFile():
     """ A Lookup Object """
@@ -51,12 +68,16 @@ class BedFile():
     def _lookup_dict(self, chromosome, location):
         """ Simple dictionary query with cython for math """
         answer = ''
-        cdef int loc
+        cdef long loc
+        cdef string c_string
         loc = int(location)
         try:
-            for k, v in self._dict[chromosome].items():
-                if v[0] < loc < v[1]:
-                    answer = k
+            for i in range(len(self._dict[chromosome].wrapped_vector)):
+                if self._dict[chromosome].wrapped_vector[i]['start'] \
+                       < loc \
+                       < self._dict[chromosome].wrapped_vector[i]['end']:
+                    c_string = self._dict[chromosome].wrapped_vector[i]['name']
+                    answer = c_string.decode()
                     break
         except KeyError:
             sys.stderr.write("\nWARNING --> Chromosome '" + chromosome +
@@ -110,7 +131,8 @@ class BedFile():
 
     def _init_dict(self, bedfile):
         self._dict = {}
-        cdef int start, end
+        cdef vector[StartEnd] vect
+        cdef StartEnd t
         with open(bedfile) as infile:
             for line in infile:
                 f = line.rstrip().split('\t')
@@ -119,10 +141,13 @@ class BedFile():
                 chr   = f[0]
                 start = int(f[1])
                 end   = int(f[2])
-                gene  = f[3]
+                gene  = f[3].encode()
+                t.start = start
+                t.end = end
+                t.name = gene
                 if chr not in self._dict:
-                    self._dict[chr] = {}
-                self._dict[chr][gene] = (start, end)
+                    self._dict[chr] = VecHolder()
+                self._dict[chr].push_back(t)
 
     def __init__(self, bedfile):
         if int(sub(['wc', '-l', bedfile]).decode().split(' ')[0]) > _max_len:
